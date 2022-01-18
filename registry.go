@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/client"
@@ -17,7 +18,7 @@ type ClusterRegistry struct {
 	Url string
 }
 
-func NewRegistry(ctx context.Context, hostPort string, imagePort string) (*ClusterRegistry, error) {
+func NewRegistry(ctx context.Context, name string, hostPort string, imagePort string) (*ClusterRegistry, error) {
 	cli, err := client.NewClientWithOpts()
 	if err != nil {
 		return nil, fmt.Errorf("NewRegistry: %w", err)
@@ -26,7 +27,7 @@ func NewRegistry(ctx context.Context, hostPort string, imagePort string) (*Clust
 	r := ClusterRegistry{
 		Container: Container{
 			Client:   cli,
-			Name:     "kind-registry",
+			Name:     name,
 			Image:    "registry",
 			Tag:      "2",
 			Networks: []string{"kind"},
@@ -34,7 +35,7 @@ func NewRegistry(ctx context.Context, hostPort string, imagePort string) (*Clust
 				imagePort: hostPort,
 			},
 		},
-		Url: fmt.Sprintf("localhost:%s", hostPort),
+		Url: fmt.Sprintf("127.0.0.1:%s", hostPort),
 	}
 
 	err = r.Start(ctx)
@@ -48,20 +49,32 @@ func NewRegistry(ctx context.Context, hostPort string, imagePort string) (*Clust
 func (r *ClusterRegistry) PushImage(ctx context.Context, dockerPath string, name string) error {
 	image := fmt.Sprintf("%s/%s", r.Url, name)
 
+	fmt.Printf("building %s...\n", image)
 	err := buildImage(ctx, r.Client, dockerPath, image)
 	if err != nil {
 		return fmt.Errorf("ClusterRegistry.PushImage: %w", err)
 	}
 
-	err = pushImage(ctx, r.Client, image)
-	if err != nil {
-		return fmt.Errorf("ClusterRegistry.PushImage: %w", err)
+	fmt.Printf("pushing %s...\n", image)
+	//this is gross but connection is getting reset for some reason:  Get "http://127.0.0.1:5000/v2/": EOF
+	//probably could handle this better in the future
+	for i := 0; i < 3; i++ {
+		err := pushImage(ctx, r.Client, image)
+		if err != nil {
+			if i != 2 {
+				time.Sleep(time.Second / 2)
+				continue
+			}
+			return fmt.Errorf("ClusterRegistry.PushImage: %w", err)
+		}
+
+		break
 	}
+
 	return nil
 }
 
 func buildImage(ctx context.Context, cli *client.Client, path string, image string) error {
-	fmt.Printf("building %s...\n", image)
 	tar, err := archive.TarWithOptions(path, &archive.TarOptions{})
 	if err != nil {
 		return fmt.Errorf("BuildImage: %w", err)
@@ -89,7 +102,6 @@ func buildImage(ctx context.Context, cli *client.Client, path string, image stri
 }
 
 func pushImage(ctx context.Context, cli *client.Client, image string) error {
-	fmt.Printf("pushing %s...\n", image)
 	res, err := cli.ImagePush(ctx, image, types.ImagePushOptions{
 		RegistryAuth: "holder",
 	})

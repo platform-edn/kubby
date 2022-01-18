@@ -48,6 +48,8 @@ func (manager *KubeResourceManager) RunJob(ctx context.Context, namespace string
 	doneChan := make(chan struct{})
 	wg := &sync.WaitGroup{}
 
+	fmt.Printf("starting job %s...\n", jobSpec.Name)
+
 	job, err := jobclient.Create(ctx, jobSpec, metav1.CreateOptions{})
 	if err != nil {
 		return fmt.Errorf("RunJob: %w", err)
@@ -76,6 +78,8 @@ func (manager *KubeResourceManager) RunJob(ctx context.Context, namespace string
 	case err := <-errChan:
 		return fmt.Errorf("RunJob: %w", err)
 	}
+
+	fmt.Printf("cleaning up job %s...\n", jobSpec.Name)
 
 	err = deleteJob(ctx, jobclient, podclient, job, pod)
 	if err != nil {

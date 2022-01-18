@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -25,12 +26,15 @@ type KubeCluster struct {
 	Provider         *cluster.Provider
 	Name             string
 	KubeConfigPath   string
+	WorkerCount      int
+	ControlCount     int
 	KindConfig       string
 	MaxStartAttempts int
 	Status           ClusterStatus
 	Registry         *ClusterRegistry
+	RegistryName     string
 	KubeClient       *kubernetes.Clientset
-	RegistryPort     string
+	RegistryPort     int
 	KubeResourcer
 }
 
@@ -48,9 +52,15 @@ func WithKubeConfigPath(path string) KubeClusterOption {
 	}
 }
 
-func WithKindConfig(config string) KubeClusterOption {
+func WithWorkerNodes(count int) KubeClusterOption {
 	return func(kc *KubeCluster) {
-		kc.KindConfig = config
+		kc.WorkerCount = count
+	}
+}
+
+func WithControlNodes(count int) KubeClusterOption {
+	return func(kc *KubeCluster) {
+		kc.ControlCount = count
 	}
 }
 
@@ -70,15 +80,10 @@ func WithMaxAttempts(attempts int) KubeClusterOption {
 	}
 }
 
-func WithRegistry(registry *ClusterRegistry, port string) KubeClusterOption {
+func WithRegistry(registry *ClusterRegistry, port int) KubeClusterOption {
 	return func(kc *KubeCluster) {
 		kc.Registry = registry
-		kc.RegistryPort = port
-	}
-}
-
-func WithRegistryPort(port string) KubeClusterOption {
-	return func(kc *KubeCluster) {
+		kc.RegistryName = registry.Name
 		kc.RegistryPort = port
 	}
 }
@@ -98,18 +103,26 @@ func NewKubeCluster(options ...KubeClusterOption) (*KubeCluster, error) {
 
 	c := &KubeCluster{
 		Provider:         provider,
-		Name:             "",
+		Name:             "kind-cluster",
 		KubeConfigPath:   filepath.Join(home, ".kube", "kind-config.yaml"),
 		KindConfig:       "",
+		WorkerCount:      1,
+		ControlCount:     1,
 		Status:           Dead,
 		MaxStartAttempts: 5,
-		RegistryPort:     "5000",
+		Registry:         nil,
+		RegistryPort:     5000,
+		RegistryName:     "kind-registry",
 		KubeResourcer:    nil,
 	}
 
 	for _, option := range options {
 		option(c)
 	}
+
+	config := createKindConfig(c.Name, c.RegistryPort, c.RegistryName, c.ControlCount, c.WorkerCount)
+
+	c.KindConfig = config
 
 	if c.Status == Dead {
 		err = c.Start()
@@ -119,7 +132,7 @@ func NewKubeCluster(options ...KubeClusterOption) (*KubeCluster, error) {
 	}
 
 	if c.Registry == nil {
-		registry, err := NewRegistry(context.TODO(), c.RegistryPort, c.RegistryPort)
+		registry, err := NewRegistry(context.TODO(), c.RegistryName, strconv.Itoa(c.RegistryPort), strconv.Itoa(c.RegistryPort))
 		if err != nil {
 			return nil, fmt.Errorf("NewKubeCluster: %w", err)
 		}
@@ -195,6 +208,7 @@ func (kc *KubeCluster) Start() error {
 	}
 
 	kc.Status = Alive
+
 	return nil
 }
 
@@ -300,6 +314,30 @@ func createKubeClient(path string) (*kubernetes.Clientset, error) {
 	}
 
 	return clientset, nil
+}
+
+func createKindConfig(clusterName string, registryPort int, registryName string, controlCount int, workerCount int) string {
+	kindConfig := fmt.Sprintf(
+		`kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: %s
+containerdConfigPatches:
+- |-
+  [plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:%d"]
+    endpoint = ["http://%s:%d"]
+nodes:
+
+`, clusterName, registryPort, registryName, registryPort)
+
+	for i := 0; i < controlCount; i++ {
+		kindConfig = kindConfig + "- role: control-plane\n"
+	}
+
+	for i := 0; i < workerCount; i++ {
+		kindConfig = kindConfig + "- role: worker\n"
+	}
+
+	return kindConfig
 }
 
 func NewProvider() *cluster.Provider {
