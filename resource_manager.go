@@ -89,6 +89,21 @@ func (manager *KubeResourceManager) RunJob(ctx context.Context, namespace string
 	return nil
 }
 
+func (manager *KubeResourceManager) CreateNamespace(ctx context.Context, name string) error {
+	fmt.Printf("creating namespace %s ...\n", name)
+
+	_, err := manager.Client.CoreV1().Namespaces().Create(ctx, &apiv1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		return fmt.Errorf("CreateNamespace: %w", err)
+	}
+
+	return nil
+}
+
 func (manager *KubeResourceManager) CreateDeployment(ctx context.Context, namespace string, deployment *appsv1.Deployment) error {
 	client := manager.Client.AppsV1().Deployments(namespace)
 
