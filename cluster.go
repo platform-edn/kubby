@@ -20,6 +20,11 @@ type KubeResourcer interface {
 	RunJob(context.Context, string, *batchv1.Job, time.Duration) error
 	CreateDeployment(context.Context, string, *appsv1.Deployment) error
 	DeleteDeployment(context.Context, string, string) error
+	CreateNamespace(ctx context.Context, name string) error
+}
+
+type HelmResourcer interface {
+	InstallChart(string, string, string) error
 }
 
 type KubeCluster struct {
@@ -28,14 +33,18 @@ type KubeCluster struct {
 	KubeConfigPath   string
 	WorkerCount      int
 	ControlCount     int
-	KindConfig       string
+	KindConfig       *KindConfig
 	MaxStartAttempts int
 	Status           ClusterStatus
 	Registry         *ClusterRegistry
 	RegistryName     string
 	KubeClient       *kubernetes.Clientset
 	RegistryPort     int
+	NodePorts        []*NodePort
+	Namespaces       []string
+	Charts           []*HelmChart
 	KubeResourcer
+	HelmResourcer
 }
 
 type KubeClusterOption func(kc *KubeCluster)
@@ -94,6 +103,24 @@ func WithKubeClient(kubeclient *kubernetes.Clientset) KubeClusterOption {
 	}
 }
 
+func WithNamespaces(namespaces ...string) KubeClusterOption {
+	return func(kc *KubeCluster) {
+		kc.Namespaces = append(kc.Namespaces, namespaces...)
+	}
+}
+
+func WithHelmCharts(charts ...*HelmChart) KubeClusterOption {
+	return func(kc *KubeCluster) {
+		kc.Charts = append(kc.Charts, charts...)
+	}
+}
+
+func WithNodePorts(ports ...*NodePort) KubeClusterOption {
+	return func(kc *KubeCluster) {
+		kc.NodePorts = append(kc.NodePorts, ports...)
+	}
+}
+
 func NewKubeCluster(options ...KubeClusterOption) (*KubeCluster, error) {
 	provider := NewProvider()
 	home, err := os.UserHomeDir()
@@ -105,7 +132,7 @@ func NewKubeCluster(options ...KubeClusterOption) (*KubeCluster, error) {
 		Provider:         provider,
 		Name:             "kind-cluster",
 		KubeConfigPath:   filepath.Join(home, ".kube", "kind-config.yaml"),
-		KindConfig:       "",
+		KindConfig:       nil,
 		WorkerCount:      1,
 		ControlCount:     1,
 		Status:           Dead,
@@ -120,9 +147,9 @@ func NewKubeCluster(options ...KubeClusterOption) (*KubeCluster, error) {
 		option(c)
 	}
 
-	config := createKindConfig(c.Name, c.RegistryPort, c.RegistryName, c.ControlCount, c.WorkerCount)
+	kindConfig := NewKindConfig(c.Name, c.ControlCount, c.WorkerCount, c.NodePorts, c.RegistryName, string(c.RegistryPort))
 
-	c.KindConfig = config
+	c.KindConfig = kindConfig
 
 	if c.Status == Dead {
 		err = c.Start()
@@ -158,6 +185,37 @@ func NewKubeCluster(options ...KubeClusterOption) (*KubeCluster, error) {
 		c.KubeResourcer = resourcer
 	}
 
+	for _, ns := range c.Namespaces {
+		createNs := func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+			defer cancel()
+
+			err = c.CreateNamespace(ctx, ns)
+			if err != nil {
+				return err
+			}
+
+			return nil
+		}
+
+		err = createNs()
+		if err != nil {
+			return nil, fmt.Errorf("NewKubeCluster: %w", err)
+		}
+	}
+
+	c.HelmResourcer, err = NewHelmChartManager(c.KubeConfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("NewKubeCluster: %w", err)
+	}
+
+	for _, chart := range c.Charts {
+		err = c.InstallChart(chart.Name, chart.Namespace, chart.Path)
+		if err != nil {
+			return nil, fmt.Errorf("NewKubeCluster: %w", err)
+		}
+	}
+
 	return c, nil
 }
 
@@ -191,7 +249,7 @@ func (kc *KubeCluster) Start() error {
 			cluster.CreateWithWaitForReady(time.Duration(0)),
 			cluster.CreateWithKubeconfigPath(kc.KubeConfigPath),
 			cluster.CreateWithDisplayUsage(false),
-			cluster.CreateWithRawConfig([]byte(kc.KindConfig)),
+			cluster.CreateWithRawConfig([]byte(kc.KindConfig.String())),
 		)
 		if err != nil {
 			if attempts == kc.MaxStartAttempts-1 {
@@ -314,30 +372,6 @@ func createKubeClient(path string) (*kubernetes.Clientset, error) {
 	}
 
 	return clientset, nil
-}
-
-func createKindConfig(clusterName string, registryPort int, registryName string, controlCount int, workerCount int) string {
-	kindConfig := fmt.Sprintf(
-		`kind: Cluster
-apiVersion: kind.x-k8s.io/v1alpha4
-name: %s
-containerdConfigPatches:
-- |-
-  [plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:%d"]
-    endpoint = ["http://%s:%d"]
-nodes:
-
-`, clusterName, registryPort, registryName, registryPort)
-
-	for i := 0; i < controlCount; i++ {
-		kindConfig = kindConfig + "- role: control-plane\n"
-	}
-
-	for i := 0; i < workerCount; i++ {
-		kindConfig = kindConfig + "- role: worker\n"
-	}
-
-	return kindConfig
 }
 
 func NewProvider() *cluster.Provider {

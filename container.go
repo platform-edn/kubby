@@ -100,6 +100,8 @@ func NewContainer(ctx context.Context, options ...ContainerOption) (*Container, 
 }
 
 func (c *Container) Start(ctx context.Context) error {
+	fmt.Printf("starting container %s:%s\n", c.Image, c.Tag)
+
 	fullImage := fmt.Sprintf("%s:%s", c.Image, c.Tag)
 	err := pullImage(ctx, c.Client, fullImage)
 	if err != nil {
@@ -166,7 +168,6 @@ func (c *Container) Delete(ctx context.Context) error {
 }
 
 func pullImage(ctx context.Context, cli *client.Client, image string) error {
-	fmt.Printf("pulling %s...\n", image)
 	out, err := cli.ImagePull(ctx, image, types.ImagePullOptions{})
 	if err != nil {
 		return fmt.Errorf("pullImage: %w", err)
