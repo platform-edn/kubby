@@ -46,7 +46,27 @@ func NewRegistry(ctx context.Context, name string, hostPort string, imagePort st
 	return &r, nil
 }
 
-func (r *ClusterRegistry) PushImage(ctx context.Context, dockerPath string, name string) error {
+func (r *ClusterRegistry) PushImage(ctx context.Context, image string) error {
+	fmt.Printf("pushing %s...\n", image)
+	//this is gross but connection is getting reset for some reason:  Get "http://127.0.0.1:5000/v2/": EOF
+	//probably could handle this better in the future
+	for i := 0; i < 3; i++ {
+		err := pushImage(ctx, r.Client, image)
+		if err != nil {
+			if i != 2 {
+				time.Sleep(time.Second / 2)
+				continue
+			}
+			return fmt.Errorf("ClusterRegistry.PushImage: %w", err)
+		}
+
+		break
+	}
+
+	return nil
+}
+
+func (r *ClusterRegistry) BuildAndPushImage(ctx context.Context, dockerPath string, name string) error {
 	image := fmt.Sprintf("%s/%s", r.Url, name)
 
 	fmt.Printf("building %s...\n", image)

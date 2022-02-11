@@ -23,6 +23,12 @@ type KubeResourcer interface {
 	CreateNamespace(ctx context.Context, name string) error
 }
 
+type ImageRegister interface {
+	BuildAndPushImage(context.Context, string, string) error
+	PushImage(context.Context, string) error
+	Delete(context.Context) error
+}
+
 type HelmResourcer interface {
 	InstallChart(string, string, string) error
 }
@@ -36,15 +42,16 @@ type KubeCluster struct {
 	KindConfig       *KindConfig
 	MaxStartAttempts int
 	Status           ClusterStatus
-	Registry         *ClusterRegistry
 	RegistryName     string
 	KubeClient       *kubernetes.Clientset
 	RegistryPort     int
 	NodePorts        []*NodePort
 	Namespaces       []string
 	Charts           []*HelmChart
+	Images           []string
 	KubeResourcer
 	HelmResourcer
+	ImageRegister
 }
 
 type KubeClusterOption func(kc *KubeCluster)
@@ -91,7 +98,7 @@ func WithMaxAttempts(attempts int) KubeClusterOption {
 
 func WithRegistry(registry *ClusterRegistry, port int) KubeClusterOption {
 	return func(kc *KubeCluster) {
-		kc.Registry = registry
+		kc.ImageRegister = registry
 		kc.RegistryName = registry.Name
 		kc.RegistryPort = port
 	}
@@ -121,6 +128,12 @@ func WithNodePorts(ports ...*NodePort) KubeClusterOption {
 	}
 }
 
+func WithImages(images ...string) KubeClusterOption {
+	return func(kc *KubeCluster) {
+		kc.Images = append(kc.Images, images...)
+	}
+}
+
 func NewKubeCluster(options ...KubeClusterOption) (*KubeCluster, error) {
 	provider := NewProvider()
 	home, err := os.UserHomeDir()
@@ -137,7 +150,7 @@ func NewKubeCluster(options ...KubeClusterOption) (*KubeCluster, error) {
 		ControlCount:     1,
 		Status:           Dead,
 		MaxStartAttempts: 5,
-		Registry:         nil,
+		ImageRegister:    nil,
 		RegistryPort:     5000,
 		RegistryName:     "kind-registry",
 		KubeResourcer:    nil,
@@ -158,13 +171,32 @@ func NewKubeCluster(options ...KubeClusterOption) (*KubeCluster, error) {
 		}
 	}
 
-	if c.Registry == nil {
+	if c.ImageRegister == nil {
 		registry, err := NewRegistry(context.TODO(), c.RegistryName, strconv.Itoa(c.RegistryPort), strconv.Itoa(c.RegistryPort))
 		if err != nil {
 			return nil, fmt.Errorf("NewKubeCluster: %w", err)
 		}
 
-		c.Registry = registry
+		c.ImageRegister = registry
+	}
+
+	for _, image := range c.Images {
+		pushImage := func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+			defer cancel()
+
+			err = c.ImageRegister.PushImage(ctx, image)
+			if err != nil {
+				return err
+			}
+
+			return nil
+		}
+
+		err = pushImage()
+		if err != nil {
+			return nil, fmt.Errorf("NewKubeCluster: %w", err)
+		}
 	}
 
 	if c.KubeClient == nil {
@@ -299,7 +331,7 @@ func (kc *KubeCluster) Delete() error {
 		}
 	}
 
-	err = kc.Registry.Delete(context.TODO())
+	err = kc.ImageRegister.Delete(context.TODO())
 	if err != nil {
 		return fmt.Errorf("KubeCluster.Delete: %s", err)
 	}
